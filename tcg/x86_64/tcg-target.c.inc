@@ -71,9 +71,6 @@ static const int tcg_target_reg_alloc_order[] = {
     TCG_REG_XMM3,
     TCG_REG_XMM4,
     TCG_REG_XMM5,
-#ifndef _WIN64
-    /* The Win64 ABI has xmm6-xmm15 as caller-saves, and we do not save
-       any of them.  Therefore only allow xmm0-xmm5 to be allocated.  */
     TCG_REG_XMM6,
     TCG_REG_XMM7,
     TCG_REG_XMM8,
@@ -84,7 +81,6 @@ static const int tcg_target_reg_alloc_order[] = {
     TCG_REG_XMM13,
     TCG_REG_XMM14,
     TCG_REG_XMM15,
-#endif
 };
 
 #define TCG_TMP_VEC  TCG_REG_XMM5
@@ -4435,10 +4431,21 @@ static const int tcg_target_callee_save_regs[] = {
 #define PUSH_SIZE \
     ((1 + ARRAY_SIZE(tcg_target_callee_save_regs)) * sizeof(tcg_target_long))
 
+#ifdef _WIN64
+/* Keep nonvolatile vectors separate from helper arguments and TCG spills. */
+#define VEC_SAVE_SIZE (10 * 16)
+#define VEC_SAVE_OFFSET \
+    (TCG_STATIC_CALL_ARGS_SIZE + CPU_TEMP_BUF_NLONGS * sizeof(long))
+QEMU_BUILD_BUG_ON(VEC_SAVE_OFFSET % TCG_TARGET_STACK_ALIGN);
+#else
+#define VEC_SAVE_SIZE 0
+#endif
+
 #define FRAME_SIZE \
     ((PUSH_SIZE \
       + TCG_STATIC_CALL_ARGS_SIZE \
       + CPU_TEMP_BUF_NLONGS * sizeof(long) \
+      + VEC_SAVE_SIZE \
       + TCG_TARGET_STACK_ALIGN - 1) \
      & ~(TCG_TARGET_STACK_ALIGN - 1))
 
@@ -4475,6 +4482,14 @@ static void tcg_target_qemu_prologue(TCGContext *s)
 
     tcg_out_mov(s, TCG_TYPE_PTR, TCG_AREG0, tcg_target_call_iarg_regs[0]);
     tcg_out_addi(s, TCG_REG_ESP, -stack_addend);
+#ifdef _WIN64
+    if (have_avx1) {
+        for (i = TCG_REG_XMM6; i <= TCG_REG_XMM15; i++) {
+            tcg_out_st(s, TCG_TYPE_V128, i, TCG_REG_CALL_STACK,
+                       VEC_SAVE_OFFSET + (i - TCG_REG_XMM6) * 16);
+        }
+    }
+#endif
     /* jmp *tb.  */
     tcg_out_modrm(s, OPC_GRP5, EXT5_JMPN_Ev, tcg_target_call_iarg_regs[1]);
 
@@ -4488,6 +4503,14 @@ static void tcg_target_qemu_prologue(TCGContext *s)
     /* TB epilogue */
     tb_ret_addr = tcg_splitwx_to_rx(s->code_ptr);
 
+#ifdef _WIN64
+    if (have_avx1) {
+        for (i = TCG_REG_XMM6; i <= TCG_REG_XMM15; i++) {
+            tcg_out_ld(s, TCG_TYPE_V128, i, TCG_REG_CALL_STACK,
+                       VEC_SAVE_OFFSET + (i - TCG_REG_XMM6) * 16);
+        }
+    }
+#endif
     tcg_out_addi(s, TCG_REG_CALL_STACK, stack_addend);
 
     if (have_avx2) {
@@ -4537,19 +4560,6 @@ static void tcg_target_init(TCGContext *s)
     s->reserved_regs = 0;
     tcg_regset_set_reg(s->reserved_regs, TCG_REG_CALL_STACK);
     tcg_regset_set_reg(s->reserved_regs, TCG_TMP_VEC);
-#ifdef _WIN64
-    /* These are call saved, and we don't save them, so don't use them. */
-    tcg_regset_set_reg(s->reserved_regs, TCG_REG_XMM6);
-    tcg_regset_set_reg(s->reserved_regs, TCG_REG_XMM7);
-    tcg_regset_set_reg(s->reserved_regs, TCG_REG_XMM8);
-    tcg_regset_set_reg(s->reserved_regs, TCG_REG_XMM9);
-    tcg_regset_set_reg(s->reserved_regs, TCG_REG_XMM10);
-    tcg_regset_set_reg(s->reserved_regs, TCG_REG_XMM11);
-    tcg_regset_set_reg(s->reserved_regs, TCG_REG_XMM12);
-    tcg_regset_set_reg(s->reserved_regs, TCG_REG_XMM13);
-    tcg_regset_set_reg(s->reserved_regs, TCG_REG_XMM14);
-    tcg_regset_set_reg(s->reserved_regs, TCG_REG_XMM15);
-#endif
 }
 
 typedef struct {
