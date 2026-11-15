@@ -29,6 +29,7 @@
 #include "qemu/bitops.h"
 #include "internals.h"
 #include "qemu/crc32c.h"
+#include "host/crypto/crc32c.h"
 #include "exec/cpu-common.h"
 #include "accel/tcg/cpu-ldst.h"
 #include "accel/tcg/cpu-loop.h"
@@ -431,6 +432,10 @@ uint64_t HELPER(crc32_64)(uint64_t acc, uint64_t val, uint32_t bytes)
 uint64_t HELPER(crc32c_64)(uint64_t acc, uint64_t val, uint32_t bytes)
 {
     uint8_t buf[8];
+
+    if (HAVE_CRC32C_ACCEL) {
+        return crc32c_accel(acc, val, bytes);
+    }
 
     stq_le_p(buf, val);
 

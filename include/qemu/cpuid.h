@@ -31,6 +31,9 @@
 #ifndef bit_SSE4_1
 #define bit_SSE4_1      (1 << 19)
 #endif
+#ifndef bit_SSE4_2
+#define bit_SSE4_2      (1 << 20)
+#endif
 #ifndef bit_MOVBE
 #define bit_MOVBE       (1 << 22)
 #endif
