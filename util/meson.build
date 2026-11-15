@@ -83,6 +83,9 @@ if have_block or have_ga
   util_ss.add(files('qemu-coroutine.c', 'qemu-coroutine-lock.c', 'qemu-coroutine-io.c'))
   util_ss.add(files(f'coroutine-@coroutine_backend@.c'))
   util_ss.add(files('thread-pool.c', 'qemu-timer.c'))
+  if host_os == 'windows'
+    util_ss.add(files('poll-win32.c'))
+  endif
   util_ss.add(files('qemu-sockets.c'))
 endif
 if have_block

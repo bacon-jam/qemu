@@ -314,7 +314,7 @@ int qemu_timeout_ns_to_ms(int64_t ns)
     /* Always round up, because it's better to wait too long than to wait too
      * little and effectively busy-wait
      */
-    ms = DIV_ROUND_UP(ns, SCALE_MS);
+    ms = ns / SCALE_MS + (ns % SCALE_MS != 0);
 
     /* To avoid overflow problems, limit this to 2^31, i.e. approx 25 days */
     return MIN(ms, INT32_MAX);
@@ -324,6 +324,7 @@ int qemu_timeout_ns_to_ms(int64_t ns)
 /* qemu implementation of g_poll which uses a nanosecond timeout but is
  * otherwise identical to g_poll
  */
+#ifndef _WIN32
 int qemu_poll_ns(GPollFD *fds, guint nfds, int64_t timeout)
 {
 #ifdef CONFIG_PPOLL
@@ -346,6 +347,7 @@ int qemu_poll_ns(GPollFD *fds, guint nfds, int64_t timeout)
     return g_poll(fds, nfds, qemu_timeout_ns_to_ms(timeout));
 #endif
 }
+#endif
 
 
 void timer_init_full(QEMUTimer *ts,
