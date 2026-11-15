@@ -279,4 +279,21 @@ size_t translator_st_len(const DisasContextBase *db);
  */
 bool translator_is_same_page(const DisasContextBase *db, vaddr addr);
 
+/**
+ * translator_gen_tb_lookup - emit a read-only exact-key jump-cache probe
+ * @db: Ordinary, uninstrumented CF_PCREL source TB
+ * @pc: Live architectural PC, including target address transformations
+ * @flags: Current target flags, including dynamic architectural state
+ * @cs_base: Current target flags extension
+ * @code: Receives the destination's normal entry on success
+ * @miss: Fallback label for any exclusion or mismatch
+ *
+ * The caller must exclude target-specific stepping and unsupported state.
+ * Success falls through; the caller owns plugin disabling and goto_ptr.
+ * Unsupported hosts, user emulation and TCI always branch to @miss.
+ */
+void translator_gen_tb_lookup(DisasContextBase *db, TCGv_i64 pc,
+                              TCGv_i32 flags, TCGv_i64 cs_base,
+                              TCGv_ptr code, TCGLabel *miss);
+
 #endif /* EXEC__TRANSLATOR_H */

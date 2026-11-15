@@ -11,6 +11,7 @@
 #include "qemu/bswap.h"
 #include "qemu/log.h"
 #include "qemu/error-report.h"
+#include "qemu/plugin.h"
 #include "accel/tcg/cpu-ldst-common.h"
 #include "accel/tcg/cpu-mmu-index.h"
 #include "exec/target_page.h"
@@ -20,12 +21,121 @@
 #include "internal-common.h"
 #include "disas/disas.h"
 #include "tb-internal.h"
+#include "tb-hash.h"
 
 static void set_can_do_io(DisasContextBase *db, bool val)
 {
     QEMU_BUILD_BUG_ON(sizeof_field(CPUState, neg.can_do_io) != 1);
     tcg_gen_st8_i32(tcg_constant_i32(val), tcg_env,
                     offsetof(CPUState, neg.can_do_io) - sizeof(CPUState));
+}
+
+void translator_gen_tb_lookup(DisasContextBase *db, TCGv_i64 pc,
+                              TCGv_i32 flags, TCGv_i64 cs_base,
+                              TCGv_ptr code, TCGLabel *miss)
+{
+#if defined(HOST_X86_64) && HOST_LONG_BITS == 64 \
+    && !defined(CONFIG_USER_ONLY) && !defined(CONFIG_TCG_INTERPRETER)
+    uint32_t cflags = tb_cflags(db->tb);
+    int shift = TARGET_PAGE_BITS - TB_JMP_PAGE_BITS;
+    TCGv_i32 value = tcg_temp_new_i32();
+    TCGv_i32 current_cflags = tcg_temp_new_i32();
+    TCGv_i64 hash = tcg_temp_new_i64();
+    TCGv_i64 tmp = tcg_temp_new_i64();
+    TCGv_ptr cache = tcg_temp_new_ptr();
+    TCGv_ptr entry = tcg_temp_new_ptr();
+    TCGv_ptr tb = tcg_temp_new_ptr();
+
+    /* Aligned x86-64 loads match the existing relaxed atomic readers. */
+    QEMU_BUILD_BUG_ON(sizeof(void *) != 8);
+    QEMU_BUILD_BUG_ON(sizeof(CPUState) % 8);
+    QEMU_BUILD_BUG_ON(offsetof(CPUState, tb_jmp_cache) % 8);
+    QEMU_BUILD_BUG_ON(offsetof(CPUJumpCache, array[0].tb) % 8);
+    QEMU_BUILD_BUG_ON(sizeof_field(CPUJumpCache, array[0]) % 8);
+    QEMU_BUILD_BUG_ON(sizeof_field(TranslationBlock, cflags) != 4);
+    QEMU_BUILD_BUG_ON(offsetof(TranslationBlock, cflags) % 4);
+    QEMU_BUILD_BUG_ON(sizeof_field(CPUState, tcg_cflags) != 4);
+    QEMU_BUILD_BUG_ON(offsetof(CPUState, tcg_cflags) % 4);
+    QEMU_BUILD_BUG_ON(sizeof_field(CPUState, singlestep_flags) != 4);
+    QEMU_BUILD_BUG_ON(offsetof(CPUState, singlestep_flags) % 4);
+    QEMU_BUILD_BUG_ON(sizeof(one_insn_per_tb) != 1);
+    QEMU_BUILD_BUG_ON(sizeof(qemu_loglevel) != 4);
+
+    tcg_debug_assert((cflags & CF_PCREL) && !db->plugin_enabled);
+    tcg_debug_assert(!(cflags & ~(CF_PCREL | CF_PARALLEL | CF_CLUSTER_MASK)));
+
+    /* These guards reduce curr_cflags() to the current cpu->tcg_cflags. */
+    tcg_gen_ld_i32(value, tcg_env,
+                  offsetof(CPUState, singlestep_flags) - sizeof(CPUState));
+    tcg_gen_brcondi_i32(TCG_COND_NE, value, 0, miss);
+    tcg_gen_ld8u_i32(value, tcg_constant_ptr(&one_insn_per_tb), 0);
+    tcg_gen_brcondi_i32(TCG_COND_NE, value, 0, miss);
+    tcg_gen_ld_i32(value, tcg_constant_ptr(&qemu_loglevel), 0);
+    /* LOG_TRACE is a backend bit; ordinary logging still forces fallback. */
+    tcg_gen_andi_i32(value, value, ~LOG_TRACE);
+    tcg_gen_brcondi_i32(TCG_COND_NE, value, 0, miss);
+    /* Even a different breakpoint on the destination page changes cflags. */
+    tcg_gen_ld_ptr(entry, tcg_env,
+                  offsetof(CPUState, breakpoints.tqh_first) - sizeof(CPUState));
+    tcg_gen_brcondi_ptr(TCG_COND_NE, entry, 0, miss);
+    tcg_gen_ld_i32(current_cflags, tcg_env,
+                  offsetof(CPUState, tcg_cflags) - sizeof(CPUState));
+    /* Equality with the restricted source also excludes all special bits. */
+    tcg_gen_brcondi_i32(TCG_COND_NE, current_cflags, cflags, miss);
+
+#ifdef CONFIG_PLUGIN
+    QEMU_BUILD_BUG_ON(sizeof_field(CPUPluginState, event_mask[0]) != 4 &&
+                      sizeof_field(CPUPluginState, event_mask[0]) != 8);
+    QEMU_BUILD_BUG_ON(offsetof(CPUPluginState, event_mask) %
+                      sizeof_field(CPUPluginState, event_mask[0]));
+    tcg_gen_ld_ptr(entry, tcg_env,
+                  offsetof(CPUState, plugin_state) - sizeof(CPUState));
+    tcg_gen_brcondi_ptr(TCG_COND_EQ, entry, 0, miss);
+    for (size_t i = 0; i < sizeof_field(CPUPluginState, event_mask) /
+                          sizeof_field(CPUPluginState, event_mask[0]); i++) {
+        intptr_t off = offsetof(CPUPluginState, event_mask) +
+                       i * sizeof_field(CPUPluginState, event_mask[0]);
+
+        /* unsigned long is 32 bits on Win64, independent of pointer size. */
+        if (sizeof_field(CPUPluginState, event_mask[0]) == 4) {
+            tcg_gen_ld_i32(value, entry, off);
+            tcg_gen_brcondi_i32(TCG_COND_NE, value, 0, miss);
+        } else {
+            tcg_gen_ld_i64(tmp, entry, off);
+            tcg_gen_brcondi_i64(TCG_COND_NE, tmp, 0, miss);
+        }
+    }
+#endif
+
+    tcg_gen_ld_ptr(cache, tcg_env,
+                  offsetof(CPUState, tb_jmp_cache) - sizeof(CPUState));
+    tcg_gen_brcondi_ptr(TCG_COND_EQ, cache, 0, miss);
+    /* System-mode tb_jmp_cache_hash_func(), including variable page size. */
+    tcg_gen_shri_i64(tmp, pc, shift);
+    tcg_gen_xor_i64(tmp, pc, tmp);
+    tcg_gen_shri_i64(hash, tmp, shift);
+    tcg_gen_andi_i64(hash, hash, TB_JMP_PAGE_MASK);
+    tcg_gen_andi_i64(tmp, tmp, TB_JMP_ADDR_MASK);
+    tcg_gen_or_i64(hash, hash, tmp);
+    tcg_gen_muli_i64(hash, hash, sizeof_field(CPUJumpCache, array[0]));
+    tcg_gen_trunc_i64_ptr(entry, hash);
+    tcg_gen_add_ptr(entry, cache, entry);
+    tcg_gen_ld_ptr(tb, entry, offsetof(CPUJumpCache, array[0].tb));
+    tcg_gen_brcondi_ptr(TCG_COND_EQ, tb, 0, miss);
+    /* CF_PCREL allows aliases: compare the cache entry PC, not tb->pc. */
+    tcg_gen_ld_i64(tmp, entry, offsetof(CPUJumpCache, array[0].pc));
+    tcg_gen_brcond_i64(TCG_COND_NE, tmp, pc, miss);
+    tcg_gen_ld_i64(tmp, tb, offsetof(TranslationBlock, cs_base));
+    tcg_gen_brcond_i64(TCG_COND_NE, tmp, cs_base, miss);
+    tcg_gen_ld_i32(value, tb, offsetof(TranslationBlock, flags));
+    tcg_gen_brcond_i32(TCG_COND_NE, value, flags, miss);
+    tcg_gen_ld_i32(value, tb, offsetof(TranslationBlock, cflags));
+    tcg_gen_brcond_i32(TCG_COND_NE, value, current_cflags, miss);
+    /* No helper/exit may retain this TB across exclusive code-region reuse. */
+    tcg_gen_ld_ptr(code, tb, offsetof(TranslationBlock, tc.ptr));
+#else
+    tcg_gen_br(miss);
+#endif
 }
 
 bool translator_io_start(DisasContextBase *db)

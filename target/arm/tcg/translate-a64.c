@@ -19,6 +19,7 @@
 #include "qemu/osdep.h"
 #include "exec/target_page.h"
 #include "exec/translator.h"
+#include "exec/plugin-gen.h"
 #include "helper-a64.h"
 #include "helper-sme.h"
 #include "helper-sve.h"
@@ -1992,10 +1993,67 @@ static void set_btype_for_blr(DisasContext *s)
     }
 }
 
+#if defined(HOST_X86_64) && HOST_LONG_BITS == 64 \
+    && !defined(CONFIG_USER_ONLY) && !defined(CONFIG_TCG_INTERPRETER)
+static bool gen_br_cached(DisasContext *s, int rn)
+{
+    uint32_t cflags = tb_cflags(s->base.tb);
+    TCGLabel *miss;
+    TCGv_i32 flags, state;
+    TCGv_i64 cs_base;
+    TCGv_ptr code;
+
+    if ((rn != 16 && rn != 17) || s->ss_active || s->base.plugin_enabled ||
+        !(cflags & CF_PCREL) ||
+        (cflags & ~(CF_PCREL | CF_PARALLEL | CF_CLUSTER_MASK))) {
+        return false;
+    }
+
+    miss = gen_new_label();
+    flags = tcg_temp_new_i32();
+    state = tcg_temp_new_i32();
+    cs_base = tcg_temp_new_i64();
+    code = tcg_temp_new_ptr();
+
+    /* Match the AArch64, non-stepping arm_get_tb_cpu_state() key. */
+    tcg_gen_ld_i32(flags, tcg_env, offsetof(CPUARMState, hflags.flags));
+    tcg_gen_andi_i32(state, flags,
+                    R_TBFLAG_ANY_AARCH64_STATE_MASK |
+                    R_TBFLAG_ANY_SS_ACTIVE_MASK);
+    tcg_gen_brcondi_i32(TCG_COND_NE, state,
+                       R_TBFLAG_ANY_AARCH64_STATE_MASK, miss);
+    tcg_gen_ld_i64(cs_base, tcg_env, offsetof(CPUARMState, hflags.flags2));
+    if (dc_isar_feature(aa64_bti, s)) {
+        TCGv_i64 btype = tcg_temp_new_i64();
+
+        tcg_gen_ld_i32(state, tcg_env, offsetof(CPUARMState, btype));
+        tcg_gen_extu_i32_i64(btype, state);
+        tcg_gen_deposit_i64(cs_base, cs_base, btype,
+                            R_TBFLAG_A64_BTYPE_SHIFT,
+                            R_TBFLAG_A64_BTYPE_LENGTH);
+    }
+
+    /* cpu_pc is the live post-TBI value; its backing field may be stale. */
+    translator_gen_tb_lookup(&s->base, cpu_pc, flags, cs_base, code, miss);
+    plugin_gen_disable_mem_helpers();
+    tcg_gen_goto_ptr(code);
+    gen_set_label(miss);
+    tcg_gen_lookup_and_goto_ptr();
+    s->base.is_jmp = DISAS_NORETURN;
+    return true;
+}
+#endif
+
 static bool trans_BR(DisasContext *s, arg_r *a)
 {
     set_btype_for_br(s, a->rn);
     gen_a64_set_pc(s, cpu_reg(s, a->rn));
+#if defined(HOST_X86_64) && HOST_LONG_BITS == 64 \
+    && !defined(CONFIG_USER_ONLY) && !defined(CONFIG_TCG_INTERPRETER)
+    if (gen_br_cached(s, a->rn)) {
+        return true;
+    }
+#endif
     s->base.is_jmp = DISAS_JUMP;
     return true;
 }

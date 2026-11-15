@@ -75,6 +75,16 @@ void tcg_gen_exit_tb(const TranslationBlock *tb, unsigned idx);
 void tcg_gen_goto_tb(unsigned idx);
 
 /**
+ * tcg_gen_goto_ptr() - emit the normal BB_EXIT/BB_END indirect TB jump
+ * @ptr: Address of the destination TB's normal entry
+ *
+ * The caller must check CF_NO_GOTO_PTR and disable plugin memory helpers
+ * before this boundary (and before any preceding TB lookup helper).
+ * This wrapper emits only the opcode, retaining normal global-state saves.
+ */
+void tcg_gen_goto_ptr(TCGv_ptr ptr);
+
+/**
  * tcg_gen_lookup_and_goto_ptr() - look up the current TB, jump to it if valid
  * @addr: Guest address of the target TB
  *
