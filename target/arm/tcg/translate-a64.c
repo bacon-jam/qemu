@@ -1883,6 +1883,92 @@ static bool trans_CB_cond_imm(DisasContext *s, arg_CB_cond_imm *a)
     return true;
 }
 
+#if !defined(CONFIG_USER_ONLY) && HOST_LONG_BITS == 64
+/*
+ * Branch to @miss unless the live instruction TLB has an exact code tag.
+ * This rejects slow-path flags; no table pointer is reused after fallback.
+ */
+static TCGv_i32 gen_bti_guarded_page(DisasContext *s, TCGv_i64 pc,
+                                   TCGLabel *miss)
+{
+    int mmu_idx = get_mem_index(s);
+    int fast_idx = mmuidx_to_fast_index(mmu_idx);
+    intptr_t fast_ofs = offsetof(CPUState, neg.tlb.f) - sizeof(CPUState)
+                       + fast_idx * sizeof(CPUTLBDescFast);
+    intptr_t full_ofs = offsetof(CPUState, neg.tlb.d) - sizeof(CPUState)
+                       + mmu_idx * sizeof(CPUTLBDesc)
+                       + offsetof(CPUTLBDesc, fulltlb);
+    TCGv_i64 mask = tcg_temp_new_i64();
+    TCGv_i64 index = tcg_temp_new_i64();
+    TCGv_i64 tag = tcg_temp_new_i64();
+    TCGv_i64 page = tcg_temp_new_i64();
+    TCGv_i64 offset = tcg_temp_new_i64();
+    TCGv_ptr table = tcg_temp_new_ptr();
+    TCGv_ptr entry = tcg_temp_new_ptr();
+    TCGv_ptr delta = tcg_temp_new_ptr();
+    TCGv_i32 guarded = tcg_temp_new_i32();
+
+    tcg_gen_ld_i64(mask, tcg_env, fast_ofs + offsetof(CPUTLBDescFast, mask));
+    tcg_gen_shri_i64(mask, mask, CPU_TLB_ENTRY_BITS);
+    tcg_gen_shri_i64(index, pc, TARGET_PAGE_BITS);
+    tcg_gen_and_i64(index, index, mask);
+    tcg_gen_shli_i64(offset, index, CPU_TLB_ENTRY_BITS);
+    tcg_gen_trunc_i64_ptr(delta, offset);
+    tcg_gen_ld_ptr(table, tcg_env, fast_ofs + offsetof(CPUTLBDescFast, table));
+    tcg_gen_add_ptr(entry, table, delta);
+    tcg_gen_ld_i64(tag, entry, offsetof(CPUTLBEntry, addr_code));
+    tcg_gen_andi_i64(page, pc, TARGET_PAGE_MASK);
+    tcg_gen_brcond_i64(TCG_COND_NE, tag, page, miss);
+
+    /* Full entries use the core MMU index, unlike the reversed fast array. */
+    tcg_gen_muli_i64(offset, index, sizeof(CPUTLBEntryFull));
+    tcg_gen_trunc_i64_ptr(delta, offset);
+    tcg_gen_ld_ptr(table, tcg_env, full_ofs);
+    tcg_gen_add_ptr(entry, table, delta);
+    tcg_gen_ld8u_i32(guarded, entry,
+                    offsetof(CPUTLBEntryFull, extra.arm.guarded));
+    return guarded;
+}
+#endif
+
+static void gen_bti_guarded_page_br(DisasContext *s, TCGv_i64 pc)
+{
+#if !defined(CONFIG_USER_ONLY) && HOST_LONG_BITS == 64
+    TCGLabel *miss = gen_new_label();
+    TCGLabel *done = gen_new_label();
+    TCGv_i32 guarded = gen_bti_guarded_page(s, pc, miss);
+
+    tcg_gen_shli_i32(guarded, guarded, 1);
+    tcg_gen_ori_i32(guarded, guarded, 1);
+    tcg_gen_st_i32(guarded, tcg_env, offsetof(CPUARMState, btype));
+    tcg_gen_br(done);
+    gen_set_label(miss);
+#endif
+    gen_helper_guarded_page_br(tcg_env, pc);
+#if !defined(CONFIG_USER_ONLY) && HOST_LONG_BITS == 64
+    gen_set_label(done);
+#endif
+}
+
+static void gen_bti_guarded_page_check(DisasContext *s)
+{
+#if !defined(CONFIG_USER_ONLY) && HOST_LONG_BITS == 64
+    TCGLabel *slow = gen_new_label();
+    TCGLabel *done = gen_new_label();
+    TCGv_i64 pc = tcg_temp_new_i64();
+    TCGv_i32 guarded;
+
+    gen_pc_plus_diff(s, pc, 0);
+    guarded = gen_bti_guarded_page(s, pc, slow);
+    tcg_gen_brcondi_i32(TCG_COND_EQ, guarded, 0, done);
+    gen_set_label(slow);
+#endif
+    gen_helper_guarded_page_check(tcg_env);
+#if !defined(CONFIG_USER_ONLY) && HOST_LONG_BITS == 64
+    gen_set_label(done);
+#endif
+}
+
 static void set_btype_for_br(DisasContext *s, int rn)
 {
     if (dc_isar_feature(aa64_bti, s)) {
@@ -1892,7 +1978,7 @@ static void set_btype_for_br(DisasContext *s, int rn)
         } else {
             TCGv_i64 pc = tcg_temp_new_i64();
             gen_pc_plus_diff(s, pc, 0);
-            gen_helper_guarded_page_br(tcg_env, pc);
+            gen_bti_guarded_page_br(s, pc);
             s->btype = -1;
         }
     }
@@ -11184,7 +11270,7 @@ static void aarch64_tr_translate_insn(DisasContextBase *dcbase, CPUState *cpu)
              */
             if (s->btype != 0
                 && !btype_destination_ok(insn, s->bt, s->btype)) {
-                gen_helper_guarded_page_check(tcg_env);
+                gen_bti_guarded_page_check(s);
             }
         } else {
             /* Not the first insn: btype must be 0.  */
