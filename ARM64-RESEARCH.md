@@ -43,3 +43,15 @@ The six-member Astra council also considered retained translation contexts, type
 Use QEMU's normal build instructions in `docs/devel` and existing `tests/tcg` facilities. `-march=native` produces a host-specific binary; a portable build must retain runtime dispatch. Keep compiler, configuration, guest workload, cache state and repetition counts fixed between paired measurements. Include correctness checks and direct/integer controls, plus cold execution, invalidation and context-switch costs where relevant.
 
 This branch contains prototypes and an upstream backport, not an upstream release. Each future change needs source review, independent correctness checks and calibrated complete-work timing before selection.
+
+## Additional measured experiments
+
+The selected branch now includes the independent SHA256SU0 regression test. The following production experiments remain on separate branches; neither replaces the selected Windows package.
+
+| Experiment | Reviewed result | Status |
+| --- | --- | --- |
+| [SHA256SU0 ordinary TCG](https://github.com/bacon-jam/qemu/blob/codex/arm64-sha256su0/ARM64-SHA256SU0-RESULTS.md) | Six paired warm full-message comparisons: 1.054286x median paired speedup, about 5.15% less time. All correctness jobs passed; caller code grew. | Held pending cold/control and remaining architectural gates. |
+| [CRC32C hardware helper](https://github.com/bacon-jam/qemu/blob/codex/arm64-crc32c/ARM64-CRC32C-RESULTS.md) | 216 measured jobs passed. Single-stream 1.84-3.96x; four-stream 1.19-1.24x median paired speedup. Copy medians within 1.3%, with order-sensitive variation. Native, portable and forced-fallback functional gates passed. | Experimental; Windows workload importance unmeasured. |
+| [Generated indirect dispatch](https://github.com/bacon-jam/qemu/blob/codex/arm64-dispatch/ARM64-DISPATCH-DESIGN.md) | Five-file BR x16/x17 design passed independent memory/synchronization review after plugin-order and Windows bitmap-width corrections. | Design only. |
+
+The CRC branch includes host unit tests and generic AArch64 instruction tests. Actual unsupported x86 hardware and normal Linux-user integration were not executed on the Windows research host. Detailed scopes, frozen identities and uncovered gates are in each linked record.
