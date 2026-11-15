@@ -5724,7 +5724,44 @@ TRANS_FEAT(SHA256SU1, aa64_sha256, do_gvec_op3_ool, a, 0, gen_helper_crypto_sha2
 
 TRANS_FEAT(SHA1H, aa64_sha1, do_gvec_op2_ool, a, 0, gen_helper_crypto_sha1h)
 TRANS_FEAT(SHA1SU1, aa64_sha1, do_gvec_op2_ool, a, 0, gen_helper_crypto_sha1su1)
-TRANS_FEAT(SHA256SU0, aa64_sha256, do_gvec_op2_ool, a, 0, gen_helper_crypto_sha256su0)
+
+static bool trans_SHA256SU0(DisasContext *s, arg_SHA256SU0 *a)
+{
+    TCGv_i32 d[5], t0, t1;
+
+    if (!dc_isar_feature(aa64_sha256, s)) {
+        return false;
+    }
+    if (HOST_BIG_ENDIAN) {
+        return do_gvec_op2_ool(s, a, 0, gen_helper_crypto_sha256su0);
+    }
+    if (!fp_access_check(s)) {
+        return true;
+    }
+
+    /* Snapshot all inputs before writing, including when rd == rn. */
+    for (int i = 0; i < 4; i++) {
+        d[i] = tcg_temp_new_i32();
+        read_vec_element_i32(s, d[i], a->rd, i, MO_32);
+    }
+    d[4] = tcg_temp_new_i32();
+    read_vec_element_i32(s, d[4], a->rn, 0, MO_32);
+    t0 = tcg_temp_new_i32();
+    t1 = tcg_temp_new_i32();
+
+    for (int i = 0; i < 4; i++) {
+        /* sigma0(x) = ROR(x, 7) ^ ROR(x, 18) ^ (x >> 3). */
+        tcg_gen_rotri_i32(t0, d[i + 1], 7);
+        tcg_gen_rotri_i32(t1, d[i + 1], 18);
+        tcg_gen_xor_i32(t0, t0, t1);
+        tcg_gen_shri_i32(t1, d[i + 1], 3);
+        tcg_gen_xor_i32(t0, t0, t1);
+        tcg_gen_add_i32(d[i], d[i], t0);
+        write_vec_element_i32(s, d[i], a->rd, i, MO_32);
+    }
+    clear_vec_high(s, true, a->rd);
+    return true;
+}
 
 TRANS_FEAT(SHA512H, aa64_sha512, do_gvec_op3_ool, a, 0, gen_helper_crypto_sha512h)
 TRANS_FEAT(SHA512H2, aa64_sha512, do_gvec_op3_ool, a, 0, gen_helper_crypto_sha512h2)
