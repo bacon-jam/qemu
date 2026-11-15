@@ -99,6 +99,9 @@ AARCH64_TESTS += test-aes
 test-aes: CFLAGS += -O -march=armv8-a+aes
 test-aes: test-aes-main.c.inc
 
+AARCH64_TESTS += test-crc32
+test-crc32: CFLAGS += -O -march=armv8-a+crc
+
 # Vector SHA1
 # Work around compiler false-positive warning, as we do for the 'sha1' test
 sha1-vector: CFLAGS=-O3 -Wno-stringop-overread
