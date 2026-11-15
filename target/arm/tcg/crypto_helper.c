@@ -304,6 +304,11 @@ void HELPER(crypto_sha256h)(void *vd, void *vn, void *vm, uint32_t desc)
     union CRYPTO_STATE m = { .l = { rm[0], rm[1] } };
     int i;
 
+#if defined(__clang__)
+#pragma clang loop unroll_count(4)
+#else
+#pragma GCC unroll 4
+#endif
     for (i = 0; i < 4; i++) {
         uint32_t t = cho(CR_ST_WORD(n, 0), CR_ST_WORD(n, 1), CR_ST_WORD(n, 2))
                      + CR_ST_WORD(n, 3) + S1(CR_ST_WORD(n, 0))
@@ -339,6 +344,11 @@ void HELPER(crypto_sha256h2)(void *vd, void *vn, void *vm, uint32_t desc)
     union CRYPTO_STATE m = { .l = { rm[0], rm[1] } };
     int i;
 
+#if defined(__clang__)
+#pragma clang loop unroll_count(4)
+#else
+#pragma GCC unroll 4
+#endif
     for (i = 0; i < 4; i++) {
         uint32_t t = cho(CR_ST_WORD(d, 0), CR_ST_WORD(d, 1), CR_ST_WORD(d, 2))
                      + CR_ST_WORD(d, 3) + S1(CR_ST_WORD(d, 0))
