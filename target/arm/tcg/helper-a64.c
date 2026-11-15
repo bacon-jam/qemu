@@ -1742,11 +1742,28 @@ static bool is_guarded_page(CPUARMState *env, vaddr addr, uintptr_t ra)
 #ifdef CONFIG_USER_ONLY
     return page_get_flags(addr) & PAGE_BTI;
 #else
+    CPUState *cs = env_cpu(env);
+    int mmu_idx = arm_env_mmu_index(env);
+    CPUTLBDescFast *fast = cpu_tlb_fast(cs, mmu_idx);
+    size_t index = (addr >> TARGET_PAGE_BITS)
+                 & (fast->mask >> CPU_TLB_ENTRY_BITS);
     CPUTLBEntryFull *full;
     void *host;
-    int mmu_idx = cpu_mmu_index(env_cpu(env), true);
-    int flags = probe_access_full(env, addr, 0, MMU_INST_FETCH, mmu_idx,
-                                  false, &host, &full, ra);
+    int flags;
+
+    /*
+     * GP follows the live instruction TLB entry, not the translated block.
+     * Require an exact tag match so entries with slow-path flags still use
+     * the normal probe.  A miss may resize the TLB, so retain no pointers
+     * across that fallback.
+     */
+    if (likely(qatomic_read(&fast->table[index].addr_code)
+               == (addr & TARGET_PAGE_MASK))) {
+        return cs->neg.tlb.d[mmu_idx].fulltlb[index].extra.arm.guarded;
+    }
+
+    flags = probe_access_full(env, addr, 0, MMU_INST_FETCH, mmu_idx,
+                              false, &host, &full, ra);
 
     assert(!(flags & TLB_INVALID_MASK));
     return full->extra.arm.guarded;
