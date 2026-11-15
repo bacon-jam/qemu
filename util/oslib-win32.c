@@ -548,7 +548,8 @@ int qemu_close_socket_osfhandle(int fd)
     __except1 {
     }
 
-    if (!SetHandleInformation((HANDLE)s, flags, flags)) {
+    if (!SetHandleInformation((HANDLE)s, HANDLE_FLAG_PROTECT_FROM_CLOSE,
+                              flags)) {
         errno = EACCES;
         return -1;
     }
